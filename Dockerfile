@@ -5,7 +5,10 @@ WORKDIR /app
 # Устанавливаем git (нужен для tinkoff-investments)
 RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
 
-# Копируем и ставим зависимости
+# Ставим tinkoff-investments отдельно с --no-deps (у них сломана зависимость)
+RUN pip install --no-cache-dir --no-deps git+https://github.com/Tinkoff/invest-python.git
+
+# Ставим остальные зависимости
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
