@@ -18,33 +18,50 @@ from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 load_dotenv()
 
-TOKEN = os.getenv("TINKOFF_SANDBOX_TOKEN")
+# Определяем режим: sandbox или production
+TRADING_MODE = os.getenv("TRADING_MODE", "sandbox")
+
+if TRADING_MODE == "production":
+    TOKEN = os.getenv("TINKOFF_TRADE_TOKEN")
+    if not TOKEN:
+        print("❌ Нет TINKOFF_TRADE_TOKEN в переменных!")
+        sys.exit(1)
+    print("⚠️  РЕЖИМ: РЕАЛЬНЫЕ ДЕНЬГИ (production)")
+else:
+    TOKEN = os.getenv("TINKOFF_SANDBOX_TOKEN")
+    if not TOKEN or "ВСТАВЬ" in TOKEN:
+        print("❌ Вставь sandbox-токен!")
+        sys.exit(1)
+    print("🧪 РЕЖИМ: Песочница (sandbox)")
+
 ACCOUNT_ID = os.getenv("TINKOFF_ACCOUNT_ID")
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY")
 
-if not TOKEN or "ВСТАВЬ" in TOKEN:
-    print("❌ Вставь sandbox-токен в .env!")
-    sys.exit(1)
 if not ACCOUNT_ID:
-    print("❌ Нет TINKOFF_ACCOUNT_ID в .env!")
+    print("❌ Нет TINKOFF_ACCOUNT_ID!")
     sys.exit(1)
 if not ANTHROPIC_KEY:
-    print("❌ Нет ANTHROPIC_API_KEY в .env!")
+    print("❌ Нет ANTHROPIC_API_KEY!")
     sys.exit(1)
 
 import anthropic
 from tinkoff.invest import (
     CandleInterval, OrderDirection, OrderType, InstrumentStatus
 )
-from tinkoff.invest.sandbox.client import SandboxClient
 from tinkoff.invest.utils import quotation_to_decimal
+
+# Выбираем клиент в зависимости от режима
+if TRADING_MODE == "production":
+    from tinkoff.invest import Client as BrokerClient
+else:
+    from tinkoff.invest.sandbox.client import SandboxClient as BrokerClient
 
 print("🦞 OpenClaw AI Trader v3 (полная картина)")
 print("=" * 50)
 
 TICKERS = ["GAZP", "LKOH", "ROSN", "MTSS", "MGNT", "SBER", "T", "NVTK"]
 
-with SandboxClient(TOKEN) as client:
+with BrokerClient(TOKEN) as client:
 
     now = datetime.now(timezone.utc)
 
@@ -349,7 +366,7 @@ for t in trades:
 # ============================================
 print("\n⚡ Шаг 6: Исполняем...")
 
-with SandboxClient(TOKEN) as client:
+with BrokerClient(TOKEN) as client:
     for trade in trades:
         ticker = trade["ticker"]
         action = trade["action"]
