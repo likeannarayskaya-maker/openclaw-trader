@@ -1,0 +1,8 @@
+git+https://github.com/Tinkoff/invest-python.git
+python-dotenv==1.1.0
+anthropic>=0.40.0
+cachetools>=5.2.0
+deprecation>=2.1.0
+grpcio>=1.39.0
+protobuf>=4.21.6,<5.0.0
+python-dateutil>=2.8.2

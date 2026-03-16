@@ -1,0 +1,16 @@
+# Секреты — никогда не коммитить!
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Данные
+data/
+*.db
+
+# IDE
+.vscode/
+.idea/

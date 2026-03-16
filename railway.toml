@@ -1,0 +1,9 @@
+[build]
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "python ai_trader_v3.py"
+
+# Cron: запуск в 9:00 и 13:00 UTC = 12:00 и 16:00 МСК
+# (Railway использует UTC)
+cronSchedule = "0 9,13 * * 1-5"
