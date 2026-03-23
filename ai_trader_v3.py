@@ -56,10 +56,28 @@ if TRADING_MODE == "production":
 else:
     from tinkoff.invest.sandbox.client import SandboxClient as BrokerClient
 
-print("🦞 OpenClaw AI Trader v3 (полная картина)")
+print("🦞 OpenClaw AI Trader v3.1 (больше акций, смелее)")
 print("=" * 50)
 
-TICKERS = ["GAZP", "LKOH", "ROSN", "MTSS", "MGNT", "SBER", "T", "NVTK"]
+TICKERS = [
+    # Нефтегаз
+    "GAZP", "LKOH", "ROSN", "NVTK",
+    # Банки и финтех
+    "SBER", "T", "VTBR",
+    # Технологии
+    "YDEX", "OZON", "POSI", "VKCO", "ASTR",
+    # Ритейл
+    "MGNT", "FIVE",
+    # Телеком
+    "MTSS",
+    # Металлы и золото
+    "PLZL", "NLMK", "CHMF",
+    # Авиа и транспорт
+    "AFLT",
+]
+
+MAX_TRADE_AMOUNT = 3500  # лимит на одну сделку
+MAX_POSITION_PCT = 0.30   # максимум 30% портфеля в одной бумаге
 
 with BrokerClient(TOKEN) as client:
 
@@ -308,17 +326,26 @@ time.sleep(10)
 # ============================================
 print("\n🧠 Шаг 5: Claude принимает решение...")
 
-decision_prompt = f"""Ты — ИИ-трейдер OpenClaw 🦞. Портфель ~10 000₽, Мосбиржа.
+decision_prompt = f"""Ты — ИИ-трейдер OpenClaw 🦞. Портфель ~10 000₽, Мосбиржа. Это ЭКСПЕРИМЕНТ для блога — твои решения публикуются подписчикам, поэтому будь интересным!
 
 МАКРО: {json.dumps(macro_data, ensure_ascii=False)}
 АКЦИИ: {json.dumps(market_data, ensure_ascii=False)}
 ПОРТФЕЛЬ: {json.dumps(portfolio_summary, ensure_ascii=False)}
 НОВОСТИ: {news_text}
 
-ПРАВИЛА: макс 2000₽ на сделку, макс 5 позиций, lot_cost<=деньгам, 0-3 сделки.
-Продавай при убытке >3% или негативных новостях.
-Учитывай: падающий рынок=не покупать, падающая нефть=осторожно с GAZP/LKOH/ROSN/NVTK,
-пониженный объём+рост=слабый тренд, геополитический рост может быть краткосрочным, ставка ЦБ>15%=депозиты конкурируют.
+ПРАВИЛА:
+- Макс {MAX_TRADE_AMOUNT}₽ на сделку, макс 7 позиций, lot_cost<=деньгам, 0-3 сделки за раз
+- Макс 30% портфеля в одной бумаге! Не набирай слишком много одной акции
+- Продавай при убытке >5% или серьёзных негативных новостях
+
+ХАРАКТЕР:
+- Будь СМЕЛЫМ! Не сиди только в Сбере и Газпроме. Ищи растущие истории в технологиях (YDEX, OZON, POSI, VKCO), золоте (PLZL), ритейле (FIVE)
+- Диверсифицируй по секторам: нефтегаз, IT, банки, ритейл, металлы — не клади всё в один сектор
+- Если видишь интересную историю (IPO, новый продукт, сильный отчёт) — действуй!
+- Объясняй решения ярко и понятно, как будто пишешь для Telegram-поста
+
+АНАЛИЗ: падающий рынок=осторожнее, падающая нефть=осторожно с нефтянкой,
+пониженный объём+рост=слабый тренд, геополитический рост может быть краткосрочным.
 
 Ответь СТРОГО JSON (без markdown, без ```):
 {{"macro_view":"1-2 предл","analysis":"3-5 предл","trades":[{{"ticker":"X","action":"BUY/SELL","lots":1,"reason":"причина"}}],"risks":"1-2 предл","next_week_outlook":"1-2 предл","mood":"emoji"}}"""
@@ -379,12 +406,24 @@ with BrokerClient(TOKEN) as client:
         stock = stocks[ticker]
         cost = market_data[ticker]["lot_cost"] * lots
 
-        if action == "BUY" and cost > 2000:
-            print(f"   ⚠️  {ticker}: {cost:.0f}₽ > лимита 2000₽")
+        if action == "BUY" and cost > MAX_TRADE_AMOUNT:
+            print(f"   ⚠️  {ticker}: {cost:.0f}₽ > лимита {MAX_TRADE_AMOUNT}₽")
             continue
         if action == "BUY" and cost > cash:
             print(f"   ⚠️  {ticker}: не хватает денег")
             continue
+
+        # Проверка концентрации: не больше 30% портфеля в одной бумаге
+        if action == "BUY":
+            # Считаем текущую стоимость позиции по этому тикеру
+            current_position_value = 0
+            for p in positions_info:
+                if p["ticker"] == ticker:
+                    current_position_value = p["quantity"] * market_data[ticker]["price"]
+            new_total = current_position_value + cost
+            if new_total > total_value * MAX_POSITION_PCT:
+                print(f"   ⚠️  {ticker}: позиция будет {new_total:.0f}₽ > {MAX_POSITION_PCT*100:.0f}% портфеля ({total_value * MAX_POSITION_PCT:.0f}₽)")
+                continue
 
         direction = (
             OrderDirection.ORDER_DIRECTION_BUY if action == "BUY"
