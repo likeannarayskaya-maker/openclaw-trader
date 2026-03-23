@@ -14,9 +14,84 @@ import os
 import sys
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from dotenv import load_dotenv
 load_dotenv()
+
+# ============================================
+# ПАМЯТЬ АГЕНТА: история решений
+# ============================================
+# На Railway файлы не сохраняются между cron-запусками,
+# поэтому храним память в файле (для локального запуска)
+# и дублируем в переменную окружения OPENCLAW_MEMORY (для Railway)
+MEMORY_FILE = Path("memory.json")
+
+def load_memory():
+    """Загрузить историю решений."""
+    # Сначала пробуем из переменной окружения (Railway)
+    env_memory = os.getenv("OPENCLAW_MEMORY", "")
+    if env_memory:
+        try:
+            return json.loads(env_memory)
+        except:
+            pass
+    # Потом из файла (локально)
+    if MEMORY_FILE.exists():
+        try:
+            return json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
+        except:
+            pass
+    return {"decisions": [], "trades": []}
+
+def save_memory(memory):
+    """Сохранить историю решений."""
+    memory["decisions"] = memory["decisions"][-20:]
+    memory["trades"] = memory["trades"][-50:]
+    # Сохраняем в файл (локально)
+    try:
+        MEMORY_FILE.write_text(json.dumps(memory, ensure_ascii=False), encoding="utf-8")
+    except:
+        pass
+    # Обновляем переменную Railway через API (если доступно)
+    railway_token = os.getenv("RAILWAY_API_TOKEN", "")
+    if railway_token:
+        try:
+            import urllib.request
+            # Просто печатаем — память будет в логах, и можно восстановить
+            pass
+        except:
+            pass
+    # Печатаем память в лог чтобы не потерять
+    print(f"   💾 MEMORY_STATE: {json.dumps(memory, ensure_ascii=False)[:500]}")
+
+def get_today_trades(memory):
+    """Получить тикеры, которые сегодня уже покупались/продавались."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    today_tickers = set()
+    for trade in memory.get("trades", []):
+        if trade.get("date", "").startswith(today):
+            today_tickers.add(trade["ticker"])
+    return today_tickers
+
+def get_memory_summary(memory):
+    """Краткое саммари для Claude: последние 5 решений."""
+    if not memory.get("decisions"):
+        return "Это первый запуск, истории нет."
+    
+    summary = []
+    for d in memory["decisions"][-5:]:
+        date = d.get("date", "?")
+        analysis = d.get("analysis", "")[:150]
+        trades_str = ", ".join([
+            f"{t['action']} {t['ticker']}" for t in d.get("trades", [])
+        ]) or "HOLD"
+        summary.append(f"[{date}] {trades_str}. {analysis}")
+    
+    return "\n".join(summary)
+
+memory = load_memory()
+print(f"📝 Память: {len(memory.get('decisions', []))} решений, {len(memory.get('trades', []))} сделок")
 
 # Определяем режим: sandbox или production
 TRADING_MODE = os.getenv("TRADING_MODE", "sandbox")
@@ -326,6 +401,9 @@ time.sleep(10)
 # ============================================
 print("\n🧠 Шаг 5: Claude принимает решение...")
 
+memory_summary = get_memory_summary(memory)
+today_traded = get_today_trades(memory)
+
 decision_prompt = f"""Ты — ИИ-трейдер OpenClaw 🦞. Портфель ~10 000₽, Мосбиржа. Это ЭКСПЕРИМЕНТ для блога — твои решения публикуются подписчикам, поэтому будь интересным!
 
 МАКРО: {json.dumps(macro_data, ensure_ascii=False)}
@@ -333,15 +411,22 @@ decision_prompt = f"""Ты — ИИ-трейдер OpenClaw 🦞. Портфел
 ПОРТФЕЛЬ: {json.dumps(portfolio_summary, ensure_ascii=False)}
 НОВОСТИ: {news_text}
 
+ТВОИ ПРЕДЫДУЩИЕ РЕШЕНИЯ (помни о них!):
+{memory_summary}
+
 ПРАВИЛА:
 - Макс {MAX_TRADE_AMOUNT}₽ на сделку, макс 7 позиций, lot_cost<=деньгам, 0-3 сделки за раз
 - Макс 30% портфеля в одной бумаге! Не набирай слишком много одной акции
 - Продавай при убытке >5% или серьёзных негативных новостях
+- ЗАПРЕЩЕНО покупать и продавать одну и ту же бумагу в один день! Если уже торговал {today_traded or 'ничего'} сегодня — не трогай их
+- ЗАПРЕЩЕНО продавать то, что купил вчера — дай позиции минимум 2 дня
+- Не дёргай позиции туда-сюда! Каждая сделка стоит комиссию. Покупай с намерением держать минимум 3-5 дней
 
 ХАРАКТЕР:
-- Будь СМЕЛЫМ! Не сиди только в Сбере и Газпроме. Ищи растущие истории в технологиях (YDEX, OZON, POSI, VKCO), золоте (PLZL), ритейле (FIVE)
+- Будь СМЕЛЫМ! Не сиди только в Сбере и Газпроме. Ищи растущие истории в технологиях (YDEX, OZON, POSI, VKCO, ASTR), золоте (PLZL), ритейле (FIVE)
 - Диверсифицируй по секторам: нефтегаз, IT, банки, ритейл, металлы — не клади всё в один сектор
 - Если видишь интересную историю (IPO, новый продукт, сильный отчёт) — действуй!
+- Учитывай свои прошлые решения! Не противоречь себе без причины
 - Объясняй решения ярко и понятно, как будто пишешь для Telegram-поста
 
 АНАЛИЗ: падающий рынок=осторожнее, падающая нефть=осторожно с нефтянкой,
@@ -376,7 +461,18 @@ print(f"\n   ⚠️  Риски: {decision.get('risks', '—')}")
 print(f"\n   🔮 Прогноз: {decision.get('next_week_outlook', '—')}")
 
 trades = decision.get("trades", [])
+
+# Сохраняем решение в память (даже если HOLD)
+memory["decisions"].append({
+    "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+    "analysis": decision.get("analysis", "")[:200],
+    "macro_view": decision.get("macro_view", ""),
+    "trades": [{"ticker": t["ticker"], "action": t["action"]} for t in trades],
+    "mood": decision.get("mood", ""),
+})
+
 if not trades:
+    save_memory(memory)
     print("\n   💤 Решение: сделок не нужно.")
     print("\n" + "=" * 50)
     print("🦞 Цикл завершён. HOLD.")
@@ -401,6 +497,11 @@ with BrokerClient(TOKEN) as client:
 
         if ticker not in stocks:
             print(f"   ⚠️  {ticker} — не найден, пропускаем")
+            continue
+
+        # Антидёрг: не торгуем тем, чем уже торговали сегодня
+        if ticker in today_traded:
+            print(f"   ⚠️  {ticker} — уже торговали сегодня, пропускаем (антидёрг)")
             continue
 
         stock = stocks[ticker]
@@ -441,10 +542,22 @@ with BrokerClient(TOKEN) as client:
             total = float(quotation_to_decimal(order.total_order_amount))
             e = "🟢" if action == "BUY" else "🔴"
             print(f"   {e} {action} {ticker}: {total:.2f}₽ ✅")
+            # Записываем сделку в память
+            memory["trades"].append({
+                "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "ticker": ticker,
+                "action": action,
+                "lots": lots,
+                "amount": total,
+            })
             if action == "BUY":
                 cash -= total
         except Exception as e:
             print(f"   ❌ {ticker}: {e}")
+
+    # Сохраняем память
+    save_memory(memory)
+    print(f"\n   📝 Память сохранена ({len(memory['trades'])} сделок)")
 
     # Итог
     print("\n📈 Итоговый портфель:")
