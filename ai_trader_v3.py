@@ -131,7 +131,7 @@ if TRADING_MODE == "production":
 else:
     from tinkoff.invest.sandbox.client import SandboxClient as BrokerClient
 
-print("🦞 OpenClaw AI Trader v3.3 (терпеливый и смелый)")
+print("🦞 OpenClaw AI Trader v4 (Бык vs Медведь)")
 print("=" * 50)
 
 TICKERS = [
@@ -151,8 +151,20 @@ TICKERS = [
     "AFLT",
 ]
 
+# Секторная карта для лимитов
+SECTOR_MAP = {
+    "GAZP": "нефтегаз", "LKOH": "нефтегаз", "ROSN": "нефтегаз", "NVTK": "нефтегаз",
+    "SBER": "банки", "T": "банки", "VTBR": "банки",
+    "YDEX": "IT", "OZON": "IT", "POSI": "IT", "VKCO": "IT", "ASTR": "IT",
+    "MGNT": "ритейл", "FIVE": "ритейл",
+    "MTSS": "телеком",
+    "PLZL": "золото", "NLMK": "металлы", "CHMF": "металлы",
+    "AFLT": "транспорт",
+}
+
 MAX_TRADE_AMOUNT = 3500  # лимит на одну сделку
 MAX_POSITION_PCT = 0.30   # максимум 30% портфеля в одной бумаге
+MAX_SECTOR_PCT = 0.35     # максимум 35% портфеля в одном секторе
 
 with BrokerClient(TOKEN) as client:
 
@@ -390,16 +402,60 @@ for line in news_text[:600].split("\n"):
 if len(news_text) > 600:
     print("   ...")
 
-# Ждём 10 секунд чтобы не упереться в rate limit Opus
+# Ждём 10 секунд чтобы не упереться в rate limit
 import time
 print("\n   ⏳ Пауза 10 сек (rate limit)...")
 time.sleep(10)
 
 
 # ============================================
-# ШАГ 5: Claude принимает решение
+# ШАГ 5: Бык vs Медведь (состязательный анализ)
 # ============================================
-print("\n🧠 Шаг 5: Claude принимает решение...")
+print("\n🐂🐻 Шаг 5: Бык vs Медведь...")
+
+bull_bear_prompt = f"""Ты — аналитик фондового рынка. Проанализируй текущую ситуацию и дай СОСТЯЗАТЕЛЬНЫЙ анализ.
+
+ДАННЫЕ:
+Акции: {json.dumps({k: {"price": v["price"], "change_%": v["change_week_%"], "volume": v["volume_vs_avg"]} for k, v in market_data.items()}, ensure_ascii=False)}
+Новости: {news_text[:800]}
+Портфель: {json.dumps(portfolio_summary, ensure_ascii=False)}
+
+Для каждой позиции в портфеле и для 3 лучших кандидатов на покупку дай:
+
+🐂 БЫЧИЙ аргумент (почему держать/покупать)
+🐻 МЕДВЕЖИЙ аргумент (почему продать/не покупать)
+
+Также укажи ЦЕЛЕВУЮ ЦЕНУ (цель на 1-2 недели) и СТОП-ЛОСС (при какой цене продавать) для каждой бумаги.
+
+Формат: компактный текст, без JSON, по-русски. Максимум 800 символов."""
+
+bull_bear_response = claude.messages.create(
+    model="claude-sonnet-4-20250514",
+    max_tokens=1000,
+    messages=[{"role": "user", "content": bull_bear_prompt}],
+)
+
+bull_bear_text = ""
+for block in bull_bear_response.content:
+    if hasattr(block, "text"):
+        bull_bear_text += block.text
+
+bull_bear_text = bull_bear_text[:1200]
+print("   ✅ Анализ Бык vs Медведь готов!")
+for line in bull_bear_text[:400].split("\n"):
+    if line.strip():
+        print(f"   {line.strip()}")
+if len(bull_bear_text) > 400:
+    print("   ...")
+
+print("\n   ⏳ Пауза 10 сек (rate limit)...")
+time.sleep(10)
+
+
+# ============================================
+# ШАГ 6: Claude принимает решение
+# ============================================
+print("\n🧠 Шаг 6: Claude принимает решение...")
 
 memory_summary = get_memory_summary(memory)
 today_traded = get_today_trades(memory)
@@ -411,35 +467,32 @@ decision_prompt = f"""Ты — ИИ-трейдер OpenClaw 🦞. Портфел
 ПОРТФЕЛЬ: {json.dumps(portfolio_summary, ensure_ascii=False)}
 НОВОСТИ: {news_text}
 
+СОСТЯЗАТЕЛЬНЫЙ АНАЛИЗ (Бык vs Медведь — учитывай ОБЕ стороны!):
+{bull_bear_text}
+
 ТВОИ ПРЕДЫДУЩИЕ РЕШЕНИЯ (помни о них!):
 {memory_summary}
 
 ПРАВИЛА:
 - Макс {MAX_TRADE_AMOUNT}₽ на сделку, макс 7 позиций, lot_cost<=деньгам, 0-3 сделки за раз
-- Макс 30% портфеля в одной бумаге! Не набирай слишком много одной акции
+- Макс 30% портфеля в одной бумаге, макс 35% портфеля в одном секторе! Секторы: {json.dumps(SECTOR_MAP, ensure_ascii=False)}
 - Продавай при убытке >5% или серьёзных негативных новостях
 - ЗАПРЕЩЕНО покупать и продавать одну и ту же бумагу в один день! Если уже торговал {today_traded or 'ничего'} сегодня — не трогай их
 - ЗАПРЕЩЕНО продавать то, что купил вчера — дай позиции минимум 2 дня
 - Не дёргай позиции туда-сюда! Каждая сделка стоит комиссию ~3-7₽. Покупай с намерением держать минимум 5 дней
-- HOLD — это НОРМАЛЬНО! Не обязательно совершать сделку каждый запуск. Если нет сильного сигнала — просто скажи HOLD
-- На ПАДАЮЩЕМ рынке (индекс ниже 2850) — предпочитай HOLD. Не лови падающие ножи. Лучше сохранить кэш для покупки на дне
-- Не покупай бумагу, которая падает 3+ дня подряд — подожди разворота
-- За прошлую неделю мы потеряли ~90₽ на комиссиях из-за частых сделок. МЕНЬШЕ СДЕЛОК = БОЛЬШЕ ПРИБЫЛИ
+- HOLD — это НОРМАЛЬНО! Если нет сильного сигнала — просто скажи HOLD
+- На ПАДАЮЩЕМ рынке (индекс ниже 2850) — предпочитай HOLD
+- Не покупай бумагу, которая падает 3+ дня подряд
 
 ХАРАКТЕР:
-- Будь СМЕЛЫМ, но ТЕРПЕЛИВЫМ! Хорошая сделка стоит ожидания. Не покупай просто потому что есть деньги
-- Не сиди только в Сбере и Газпроме. Ищи растущие истории в технологиях (YDEX, OZON, POSI, VKCO, ASTR), золоте (PLZL), ритейле (FIVE)
-- Диверсифицируй по секторам: нефтегаз, IT, банки, ритейл, металлы — не клади всё в один сектор
-- Если видишь интересную историю (IPO, новый продукт, сильный отчёт) — действуй!
-- Учитывай свои прошлые решения! Не противоречь себе без причины
-- Объясняй решения ярко и понятно, как будто пишешь для Telegram-поста
-- Если решил HOLD — объясни почему, это тоже интересно для подписчиков
-
-АНАЛИЗ: падающий рынок=осторожнее, падающая нефть=осторожно с нефтянкой,
-пониженный объём+рост=слабый тренд, геополитический рост может быть краткосрочным.
+- Будь СМЕЛЫМ, но ТЕРПЕЛИВЫМ! Учитывай и бычьи, и медвежьи аргументы из анализа выше
+- Диверсифицируй по секторам, ищи растущие истории
+- Объясняй решения ярко, как для Telegram-поста
 
 Ответь СТРОГО JSON (без markdown, без ```):
-{{"macro_view":"1-2 предл","analysis":"3-5 предл","trades":[{{"ticker":"X","action":"BUY/SELL","lots":1,"reason":"причина"}}],"risks":"1-2 предл","next_week_outlook":"1-2 предл","mood":"emoji"}}"""
+{{"macro_view":"1-2 предл","analysis":"3-5 предл","trades":[{{"ticker":"X","action":"BUY/SELL","lots":1,"reason":"причина","target_price":999,"stop_loss":999}}],"risks":"1-2 предл","next_week_outlook":"1-2 предл","mood":"emoji"}}
+
+ВАЖНО: для каждой сделки ОБЯЗАТЕЛЬНО укажи target_price (цель на 1-2 недели) и stop_loss (при какой цене выходим)."""
 
 response = claude.messages.create(
     model="claude-opus-4-6",
@@ -487,13 +540,17 @@ if not trades:
 print(f"\n   📋 Сделки ({len(trades)}):")
 for t in trades:
     emoji = "🟢 КУПИТЬ" if t["action"] == "BUY" else "🔴 ПРОДАТЬ"
+    target = t.get("target_price", "?")
+    stop = t.get("stop_loss", "?")
     print(f"   {emoji} {t['ticker']} ({t['lots']} лот) — {t['reason']}")
+    if t["action"] == "BUY":
+        print(f"      🎯 Цель: {target}₽ | 🛑 Стоп: {stop}₽")
 
 
 # ============================================
-# ШАГ 6: Исполнение
+# ШАГ 7: Исполнение
 # ============================================
-print("\n⚡ Шаг 6: Исполняем...")
+print("\n⚡ Шаг 7: Исполняем...")
 
 with BrokerClient(TOKEN) as client:
     for trade in trades:
@@ -519,6 +576,17 @@ with BrokerClient(TOKEN) as client:
         if action == "BUY" and cost > cash:
             print(f"   ⚠️  {ticker}: не хватает денег")
             continue
+
+        # Проверка секторных лимитов: не больше 35% в одном секторе
+        if action == "BUY" and ticker in SECTOR_MAP:
+            sector = SECTOR_MAP[ticker]
+            sector_value = cost
+            for p in positions_info:
+                if p["ticker"] in SECTOR_MAP and SECTOR_MAP.get(p["ticker"]) == sector:
+                    sector_value += p["quantity"] * market_data.get(p["ticker"], {}).get("price", 0)
+            if sector_value > total_value * MAX_SECTOR_PCT:
+                print(f"   ⚠️  {ticker}: сектор «{sector}» будет {sector_value:.0f}₽ > {MAX_SECTOR_PCT*100:.0f}% портфеля ({total_value * MAX_SECTOR_PCT:.0f}₽)")
+                continue
 
         # Проверка концентрации: не больше 30% портфеля в одной бумаге
         if action == "BUY":
